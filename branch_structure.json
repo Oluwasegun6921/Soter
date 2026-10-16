@@ -1,0 +1,21 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "fix/issue-1400-add-gas-budgets-for-reassign-batch-revoke-and",
+    "fix/issue-1405-enforce-campaign-pause-in-batch-revoke-batch",
+    "main",
+    "origin"
+  ],
+  "parent": {
+    "fix/issue-1400-add-gas-budgets-for-reassign-batch-revoke-and": "main",
+    "fix/issue-1405-enforce-campaign-pause-in-batch-revoke-batch": "main",
+    "main": null,
+    "origin": "main"
+  },
+  "order": [
+    "main",
+    "fix/issue-1400-add-gas-budgets-for-reassign-batch-revoke-and",
+    "fix/issue-1405-enforce-campaign-pause-in-batch-revoke-batch",
+    "origin"
+  ]
+}
