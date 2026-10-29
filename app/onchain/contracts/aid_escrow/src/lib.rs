@@ -1857,26 +1857,28 @@ impl AidEscrow {
         Ok(())
     }
 
-    /// Admin reassigns an unclaimed package to a new recipient.
-    pub fn reassign_package(
-        env: Env,
-        package_id: u64,
-        new_recipient: Address,
-    ) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
+    /// Admin reassigns an unclaimed package to a new recipient.    
+pub fn reassign_package(
+    env: Env,
+    package_id: u64,
+    new_recipient: Address,
+) -> Result<(), Error> {
+    let admin = Self::get_admin(env.clone())?;
+    admin.require_auth();
 
-        let key = crate::keys::package_key(package_id);
-        let mut package: Package = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::PackageNotFound)?;
+    let key = crate::keys::package_key(package_id);
+    let mut package: Package = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(Error::PackageNotFound)?;
 
-        if package.status != PackageStatus::Created {
-            return Err(Error::PackageNotActive);
-        }
+    Self::check_campaign_paused(&env, &package.metadata)?;
 
+    if package.status != PackageStatus::Created {
+        return Err(Error::PackageNotActive);
+    }
+    
         let now = env.ledger().timestamp();
         if package.expires_at > 0 && now > package.expires_at {
             return Err(Error::PackageExpired);
