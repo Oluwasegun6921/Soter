@@ -1858,6 +1858,8 @@ impl AidEscrow {
     }
 
     /// Admin reassigns an unclaimed package to a new recipient.
+    ///
+    /// Packages belonging to a paused campaign cannot be reassigned.
     pub fn reassign_package(
         env: Env,
         package_id: u64,
@@ -1872,6 +1874,8 @@ impl AidEscrow {
             .persistent()
             .get(&key)
             .ok_or(Error::PackageNotFound)?;
+
+        Self::check_campaign_paused(&env, &package.metadata)?;
 
         if package.status != PackageStatus::Created {
             return Err(Error::PackageNotActive);
@@ -1945,6 +1949,14 @@ impl AidEscrow {
             Some(package) => package,
             None => return Self::batch_action_result(id, BatchAdminActionStatus::NotFound, 0),
         };
+
+        if Self::check_campaign_paused(env, &package.metadata).is_err() {
+            return Self::batch_action_result(
+                id,
+                BatchAdminActionStatus::CampaignPaused,
+                0,
+            );
+        }
 
         if package.status != PackageStatus::Created {
             return Self::batch_action_result(id, BatchAdminActionStatus::InvalidState, 0);
@@ -3707,7 +3719,7 @@ mod tests {
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger};
     use soroban_sdk::token::{StellarAssetClient, TokenClient};
-    use soroban_sdk::{symbol_short, Address, Env, Map};
+    use soroban_sdk::{symbol_short, Address, Env, Map, String, Symbol};
 
     fn setup() -> (Env, AidEscrowClient<'static>) {
         let env = Env::default();
@@ -3733,6 +3745,15 @@ mod tests {
         // so they will pass the dynamic check in the refactored fund method.
 
         (token, sac, token_client)
+    }
+
+    fn campaign_metadata(env: &Env, campaign_ref: &str) -> Map<Symbol, String> {
+        let mut metadata = Map::new(env);
+        metadata.set(
+            Symbol::new(env, keys::META_CAMPAIGN_REF),
+            String::from_str(env, campaign_ref),
+        );
+        metadata
     }
 
     #[test]
@@ -3964,6 +3985,132 @@ mod tests {
         // Requesting more than MAX_PAGE_SIZE must be silently capped.
         let result = client.list_recipient_packages(&recipient, &0, &(MAX_PAGE_SIZE + 100));
         assert!(result.len() <= MAX_PAGE_SIZE);
+    }
+
+    // ---- Campaign pause enforcement (issue #1405) ----
+
+    #[test]
+    fn reassign_package_rejects_paused_campaign() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        let original_recipient = Address::generate(&env);
+        let new_recipient = Address::generate(&env);
+        let (token, sac, _) = setup_token(&env, &admin);
+
+        env.mock_all_auths();
+        client.init(&admin);
+        sac.mint(&admin, &10_000_000);
+        client.fund(&token, &admin, &10_000_000);
+
+        let campaign_ref = String::from_str(&env, "campaign-paused");
+        let metadata = campaign_metadata(&env, "campaign-paused");
+        client.create_package(
+            &admin,
+            &1,
+            &original_recipient,
+            &10_000_000,
+            &token,
+            &0,
+            &metadata,
+        );
+        client.pause_campaign(&campaign_ref);
+
+        let result = client.try_reassign_package(&1, &new_recipient);
+        assert!(matches!(result, Err(Ok(Error::ContractPaused))));
+        assert_eq!(client.get_package(&1).recipient, original_recipient);
+    }
+
+    #[test]
+    fn batch_revoke_skips_paused_campaign_and_processes_unpaused_campaign() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let (token, sac, _) = setup_token(&env, &admin);
+
+        env.mock_all_auths();
+        client.init(&admin);
+        sac.mint(&admin, &20_000_000);
+        client.fund(&token, &admin, &20_000_000);
+
+        let paused_metadata = campaign_metadata(&env, "campaign-paused");
+        let active_metadata = campaign_metadata(&env, "campaign-active");
+        client.create_package(
+            &admin, &1, &recipient, &10_000_000, &token, &0, &paused_metadata,
+        );
+        client.create_package(
+            &admin, &2, &recipient, &10_000_000, &token, &0, &active_metadata,
+        );
+        client.pause_campaign(&String::from_str(&env, "campaign-paused"));
+
+        let mut ids = soroban_sdk::Vec::new(&env);
+        ids.push_back(1);
+        ids.push_back(2);
+        let results = client.batch_revoke(&ids);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results.get(0).unwrap().package_id, 1);
+        assert_eq!(
+            results.get(0).unwrap().status,
+            BatchAdminActionStatus::CampaignPaused
+        );
+        assert_eq!(results.get(0).unwrap().amount, 0);
+        assert_eq!(results.get(1).unwrap().package_id, 2);
+        assert_eq!(
+            results.get(1).unwrap().status,
+            BatchAdminActionStatus::Success
+        );
+        assert_eq!(results.get(1).unwrap().amount, 10_000_000);
+        assert_eq!(client.get_package(&1).status, PackageStatus::Created);
+        assert_eq!(client.get_package(&2).status, PackageStatus::Cancelled);
+        assert_eq!(client.get_total_locked(&token), 10_000_000);
+    }
+
+    #[test]
+    fn batch_refund_skips_paused_campaign_and_processes_unpaused_campaign() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let (token, sac, _) = setup_token(&env, &admin);
+
+        env.mock_all_auths();
+        client.init(&admin);
+        sac.mint(&admin, &20_000_000);
+        client.fund(&token, &admin, &20_000_000);
+
+        let paused_metadata = campaign_metadata(&env, "campaign-paused");
+        let active_metadata = campaign_metadata(&env, "campaign-active");
+        client.create_package(
+            &admin, &1, &recipient, &10_000_000, &token, &1_050, &paused_metadata,
+        );
+        client.create_package(
+            &admin, &2, &recipient, &10_000_000, &token, &1_050, &active_metadata,
+        );
+        client.pause_campaign(&String::from_str(&env, "campaign-paused"));
+
+        // Both packages are eligible for refund after their expiry timestamp.
+        env.ledger().with_mut(|li| li.timestamp = 1_051);
+
+        let mut ids = soroban_sdk::Vec::new(&env);
+        ids.push_back(1);
+        ids.push_back(2);
+        let results = client.batch_refund(&ids);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results.get(0).unwrap().package_id, 1);
+        assert_eq!(
+            results.get(0).unwrap().status,
+            BatchAdminActionStatus::CampaignPaused
+        );
+        assert_eq!(results.get(0).unwrap().amount, 0);
+        assert_eq!(results.get(1).unwrap().package_id, 2);
+        assert_eq!(
+            results.get(1).unwrap().status,
+            BatchAdminActionStatus::Success
+        );
+        assert_eq!(results.get(1).unwrap().amount, 10_000_000);
+        assert_eq!(client.get_package(&1).status, PackageStatus::Created);
+        assert_eq!(client.get_package(&2).status, PackageStatus::Refunded);
+        assert_eq!(client.get_total_locked(&token), 10_000_000);
     }
 
     #[test]
