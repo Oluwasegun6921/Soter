@@ -1957,7 +1957,6 @@ impl AidEscrow {
         }
 
         if package.status != PackageStatus::Created {
-
             return Self::batch_action_result(id, BatchAdminActionStatus::InvalidState, 0);
         }
 
