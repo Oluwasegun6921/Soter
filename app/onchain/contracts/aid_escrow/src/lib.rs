@@ -1946,7 +1946,6 @@ impl AidEscrow {
         let mut package: Package = match env.storage().persistent().get(&key) {
             Some(package) => package,
             None => return Self::batch_action_result(id, BatchAdminActionStatus::NotFound, 0),
-        
         };
 
         if Self::check_campaign_paused(env, &package.metadata).is_err() {
