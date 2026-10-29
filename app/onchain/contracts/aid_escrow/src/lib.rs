@@ -1858,11 +1858,11 @@ impl AidEscrow {
     }
 
     /// Admin reassigns an unclaimed package to a new recipient.    
-pub fn reassign_package(
-    env: Env,
-    package_id: u64,
-    new_recipient: Address,
-) -> Result<(), Error> {
+    pub fn reassign_package(
+        env: Env,
+        package_id: u64,
+        new_recipient: Address,
+    ) -> Result<(), Error> {
     let admin = Self::get_admin(env.clone())?;
     admin.require_auth();
 
