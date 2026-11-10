@@ -527,3 +527,116 @@ fn test_batch_revoke_and_refund_are_idempotent_across_separate_calls() {
         locked_after_first_refund
     );
 }
+
+#[test]
+fn test_batch_revoke_respects_campaign_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token_client, token_admin_client) = setup_token(&env, &token_admin);
+    let contract_id = env.register(AidEscrow, ());
+    let client = AidEscrowClient::new(&env, &contract_id);
+
+    client.init(&admin);
+    token_admin_client.mint(&admin, &(2 * UNIT));
+    client.fund(&token_client.address, &admin, &(2 * UNIT));
+
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(Address::generate(&env));
+    recipients.push_back(Address::generate(&env));
+
+    let mut amounts = Vec::new(&env);
+    amounts.push_back(UNIT);
+    amounts.push_back(UNIT);
+
+    let mut paused_metadata = Map::new(&env);
+    paused_metadata.set(
+        Symbol::new(&env, "campaign_ref"),
+        String::from_str(&env, "camp-a"),
+    );
+
+    let mut metadatas = Vec::new(&env);
+    metadatas.push_back(paused_metadata);
+    metadatas.push_back(Map::new(&env));
+
+    let ids = client.batch_create_packages(
+        &admin,
+        &recipients,
+        &amounts,
+        &token_client.address,
+        &86400,
+        &metadatas,
+    );
+
+    client.pause_campaign(&String::from_str(&env, "camp-a"));
+
+    let mut revoke_ids = Vec::new(&env);
+    revoke_ids.push_back(ids.get(0).unwrap());
+    revoke_ids.push_back(ids.get(1).unwrap());
+
+    let results = client.batch_revoke(&revoke_ids);
+
+    assert_eq!(
+        results.get(0).unwrap().status,
+        BatchAdminActionStatus::CampaignPaused
+    );
+    assert_eq!(
+        results.get(1).unwrap().status,
+        BatchAdminActionStatus::Success
+    );
+    assert_eq!(
+        client.get_package(&ids.get(0).unwrap()).status,
+        PackageStatus::Created
+    );
+    assert_eq!(
+        client.get_package(&ids.get(1).unwrap()).status,
+        PackageStatus::Cancelled
+    );
+    assert_eq!(client.get_total_locked(&token_client.address), UNIT);
+}
+
+#[test]
+fn test_reassign_package_respects_campaign_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let new_recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token_client, token_admin_client) = setup_token(&env, &token_admin);
+    let contract_id = env.register(AidEscrow, ());
+    let client = AidEscrowClient::new(&env, &contract_id);
+
+    client.init(&admin);
+    token_admin_client.mint(&admin, &UNIT);
+    client.fund(&token_client.address, &admin, &UNIT);
+
+    let mut metadata = Map::new(&env);
+    metadata.set(
+        Symbol::new(&env, "campaign_ref"),
+        String::from_str(&env, "camp-paused"),
+    );
+
+    let package_id = 100;
+    let expiry = env.ledger().timestamp() + 86400;
+
+    client.create_package(
+        &admin,
+        &package_id,
+        &recipient,
+        &UNIT,
+        &token_client.address,
+        &expiry,
+        &metadata,
+    );
+
+    client.pause_campaign(&String::from_str(&env, "camp-paused"));
+
+    let result = client.try_reassign_package(&package_id, &new_recipient);
+
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+    assert_eq!(client.get_package(&package_id).recipient, recipient);
+}
